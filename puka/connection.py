@@ -5,6 +5,12 @@ import socket
 import struct
 import time
 import urllib
+
+try:
+    import ssl
+except ImportError:
+    ssl = None
+
 from . import urlparse
 
 from . import channel
@@ -27,7 +33,7 @@ class Connection(object):
         self.channels = channel.ChannelCollection()
         self.promises = promise.PromiseCollection(self)
 
-        (self.username, self.password, self.vhost, self.host, self.port) = \
+        (self.username, self.password, self.vhost, self.host, self.port, self.use_ssl) = \
             parse_amqp_url(amqp_url)
 
     def _init_buffers(self):
@@ -53,6 +59,13 @@ class Connection(object):
 
         (family, socktype, proto, canonname, sockaddr) = addrinfo[0]
         self.sd = socket.socket(family, socktype, proto)
+
+        if self.use_ssl:
+            if ssl:
+                self.sd = ssl.wrap_socket(self.sd)
+            else:
+                raise RuntimeError("Use of SSL requires the ssl library found in python 2.6 and higher")
+
         self.sd.setblocking(False)
         set_ridiculously_high_buffers(self.sd)
         try:
@@ -333,10 +346,13 @@ def parse_amqp_url(amqp_url):
     >>> parse_amqp_url('amqp://[::1]')
     ('guest', 'guest', '/', '::1', 5672)
     '''
-    assert amqp_url.startswith('amqp://'), "Only amqp:// protocol supported."
+    assert amqp_url.startswith(('amqp://', 'amqps://')), "Only amqp:// and amqps:// protocols supported."
+    protocol = 'amqp://' if amqp_url.startswith('amqp://') else 'amqps://'
+    ssl = True if protocol == 'amqps://' else False
+
     # urlsplit doesn't know how to parse query when scheme is amqp,
     # we need to pretend we're http'
-    o = urlparse.urlsplit('http://' + amqp_url[len('amqp://'):])
+    o = urlparse.urlsplit('http://' + amqp_url[len(protocol):])
     username = urllib.unquote(o.username) if o.username is not None else 'guest'
     password = urllib.unquote(o.password) if o.password is not None else 'guest'
 
@@ -347,7 +363,7 @@ def parse_amqp_url(amqp_url):
     vhost = urllib.unquote(path) if path else '/'
     host = urllib.unquote(o.hostname) if o.hostname else 'localhost'
     port = o.port if o.port else 5672
-    return (username, password, vhost, host, port)
+    return (username, password, vhost, host, port, ssl)
 
 def set_ridiculously_high_buffers(sd):
     '''
