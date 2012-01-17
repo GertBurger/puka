@@ -5,6 +5,12 @@ import socket
 import struct
 import time
 import urllib
+
+try:
+    import ssl
+except ImportError:
+    ssl = None
+
 from . import urlparse
 
 from . import channel
@@ -27,7 +33,7 @@ class Connection(object):
         self.channels = channel.ChannelCollection()
         self.promises = promise.PromiseCollection(self)
 
-        (self.username, self.password, self.vhost, self.host, self.port) = \
+        (self.username, self.password, self.vhost, self.host, self.port, self.use_ssl) = \
             parse_amqp_url(amqp_url)
 
     def _init_buffers(self):
@@ -53,13 +59,16 @@ class Connection(object):
 
         (family, socktype, proto, canonname, sockaddr) = addrinfo[0]
         self.sd = socket.socket(family, socktype, proto)
+
+        if self.use_ssl:
+            if ssl:
+                self.sd = ssl.wrap_socket(self.sd)
+            else:
+                raise RuntimeError("Use of SSL requires the ssl library found in python 2.6 and higher")
+
+        self.sd.connect(sockaddr)
         self.sd.setblocking(False)
         set_ridiculously_high_buffers(self.sd)
-        try:
-            self.sd.connect(sockaddr)
-        except socket.error, e:
-            if e.errno not in (errno.EINPROGRESS, errno.EWOULDBLOCK):
-                raise
         return machine.connection_handshake(self)
 
     def on_read(self):
@@ -150,13 +159,15 @@ class Connection(object):
     def on_write(self):
         try:
             # On windows socket.send blows up if the buffer is too large.
-            r = self.sd.send(self.send_buf.read(128*1024))
+            data = self.send_buf.read(128*1024)
+            if data:
+                r = self.sd.send(data)
+                self.send_buf.consume(r)
         except socket.error, e:
             if e.errno == errno.EAGAIN:
                 return
             else:
                 raise
-        self.send_buf.consume(r)
 
 
     def _tune_frame_max(self, new_frame_max):
@@ -293,50 +304,57 @@ class Connection(object):
 def parse_amqp_url(amqp_url):
     '''
     >>> parse_amqp_url('amqp:///')
-    ('guest', 'guest', '/', 'localhost', 5672)
+    ('guest', 'guest', '/', 'localhost', 5672, False)
     >>> parse_amqp_url('amqp://a:b@c:1/d')
-    ('a', 'b', 'd', 'c', 1)
+    ('a', 'b', 'd', 'c', 1, False)
     >>> parse_amqp_url('amqp://g%20uest:g%20uest@host/vho%20st')
-    ('g uest', 'g uest', 'vho st', 'host', 5672)
+    ('g uest', 'g uest', 'vho st', 'host', 5672, False)
     >>> parse_amqp_url('http://asd')
     Traceback (most recent call last):
       ...
-    AssertionError: Only amqp:// protocol supported.
+    AssertionError: Only amqp:// and amqps:// protocols supported.
     >>> parse_amqp_url('amqp://host/%2f')
-    ('guest', 'guest', '/', 'host', 5672)
+    ('guest', 'guest', '/', 'host', 5672, False)
     >>> parse_amqp_url('amqp://host/%2fabc')
-    ('guest', 'guest', '/abc', 'host', 5672)
+    ('guest', 'guest', '/abc', 'host', 5672, False)
     >>> parse_amqp_url('amqp://host/')
-    ('guest', 'guest', '/', 'host', 5672)
+    ('guest', 'guest', '/', 'host', 5672, False)
     >>> parse_amqp_url('amqp://host')
-    ('guest', 'guest', '/', 'host', 5672)
+    ('guest', 'guest', '/', 'host', 5672, False)
     >>> parse_amqp_url('amqp://user:pass@host:10000/vhost')
-    ('user', 'pass', 'vhost', 'host', 10000)
+    ('user', 'pass', 'vhost', 'host', 10000, False)
     >>> parse_amqp_url('amqp://user%61:%61pass@ho%61st:10000/v%2fhost')
-    ('usera', 'apass', 'v/host', 'hoast', 10000)
+    ('usera', 'apass', 'v/host', 'hoast', 10000, False)
     >>> parse_amqp_url('amqp://')
-    ('guest', 'guest', '/', 'localhost', 5672)
+    ('guest', 'guest', '/', 'localhost', 5672, False)
     >>> parse_amqp_url('amqp://:@/') # this is a violation, vhost should be=''
-    ('', '', '/', 'localhost', 5672)
+    ('', '', '/', 'localhost', 5672, False)
     >>> parse_amqp_url('amqp://user@/')
-    ('user', 'guest', '/', 'localhost', 5672)
+    ('user', 'guest', '/', 'localhost', 5672, False)
     >>> parse_amqp_url('amqp://user:@/')
-    ('user', '', '/', 'localhost', 5672)
+    ('user', '', '/', 'localhost', 5672, False)
     >>> parse_amqp_url('amqp://host')
-    ('guest', 'guest', '/', 'host', 5672)
+    ('guest', 'guest', '/', 'host', 5672, False)
     >>> parse_amqp_url('amqp:///vhost')
-    ('guest', 'guest', 'vhost', 'localhost', 5672)
+    ('guest', 'guest', 'vhost', 'localhost', 5672, False)
     >>> parse_amqp_url('amqp://host/')
-    ('guest', 'guest', '/', 'host', 5672)
+    ('guest', 'guest', '/', 'host', 5672, False)
     >>> parse_amqp_url('amqp://host/%2f%2f')
-    ('guest', 'guest', '//', 'host', 5672)
+    ('guest', 'guest', '//', 'host', 5672, False)
     >>> parse_amqp_url('amqp://[::1]')
-    ('guest', 'guest', '/', '::1', 5672)
+    ('guest', 'guest', '/', '::1', 5672, False)
+    >>> parse_amqp_url('amqps://[::1]')
+    ('guest', 'guest', '/', '::1', 5671, True)
+    >>> parse_amqp_url('amqps://[::1]:5555')
+    ('guest', 'guest', '/', '::1', 5555, True)
     '''
-    assert amqp_url.startswith('amqp://'), "Only amqp:// protocol supported."
+    assert amqp_url.startswith(('amqp://', 'amqps://')), "Only amqp:// and amqps:// protocols supported."
+    protocol = 'amqp://' if amqp_url.startswith('amqp://') else 'amqps://'
+    ssl = True if protocol == 'amqps://' else False
+
     # urlsplit doesn't know how to parse query when scheme is amqp,
     # we need to pretend we're http'
-    o = urlparse.urlsplit('http://' + amqp_url[len('amqp://'):])
+    o = urlparse.urlsplit('http://' + amqp_url[len(protocol):])
     username = urllib.unquote(o.username) if o.username is not None else 'guest'
     password = urllib.unquote(o.password) if o.password is not None else 'guest'
 
@@ -346,8 +364,8 @@ def parse_amqp_url(amqp_url):
     # that empty vhost is not very useful.
     vhost = urllib.unquote(path) if path else '/'
     host = urllib.unquote(o.hostname) if o.hostname else 'localhost'
-    port = o.port if o.port else 5672
-    return (username, password, vhost, host, port)
+    port = o.port if o.port else 5671 if ssl else 5672
+    return (username, password, vhost, host, port, ssl)
 
 def set_ridiculously_high_buffers(sd):
     '''
