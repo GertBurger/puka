@@ -24,11 +24,11 @@ class TestConnection(base.TestCase):
 
     # The following tests take 3 seconds each, due to Rabbit.
     def test_wrong_user(self):
-        (username, password, vhost, host, port) = \
+        (username, password, vhost, host, port, use_ssl) = \
             puka.connection.parse_amqp_url(AMQP_URL)
 
-        client = puka.Client('amqp://%s:%s@%s:%s%s' % \
-                                 (username, 'wrongpass', host, port, vhost))
+        client = puka.Client('amqp%s://%s:%s@%s:%s%s' % \
+                                 ('s' if use_ssl else '', username, 'wrongpass', host, port, vhost))
         promise = client.connect()
         with self.assertRaises(puka.ConnectionBroken):
             client.wait(promise)
