@@ -159,13 +159,15 @@ class Connection(object):
     def on_write(self):
         try:
             # On windows socket.send blows up if the buffer is too large.
-            r = self.sd.send(self.send_buf.read(128*1024))
+            data = self.send_buf.read(128*1024)
+            if data:
+                r = self.sd.send(data)
+                self.send_buf.consume(r)
         except socket.error, e:
             if e.errno == errno.EAGAIN:
                 return
             else:
                 raise
-        self.send_buf.consume(r)
 
 
     def _tune_frame_max(self, new_frame_max):
