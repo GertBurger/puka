@@ -66,13 +66,9 @@ class Connection(object):
             else:
                 raise RuntimeError("Use of SSL requires the ssl library found in python 2.6 and higher")
 
+        self.sd.connect(sockaddr)
         self.sd.setblocking(False)
         set_ridiculously_high_buffers(self.sd)
-        try:
-            self.sd.connect(sockaddr)
-        except socket.error, e:
-            if e.errno not in (errno.EINPROGRESS, errno.EWOULDBLOCK):
-                raise
         return machine.connection_handshake(self)
 
     def on_read(self):
