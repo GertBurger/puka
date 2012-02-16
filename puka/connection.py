@@ -360,7 +360,7 @@ def parse_amqp_url(amqp_url):
     # that empty vhost is not very useful.
     vhost = urllib.unquote(path) if path else '/'
     host = urllib.unquote(o.hostname) if o.hostname else 'localhost'
-    port = o.port if o.port else 5672
+    port = o.port if o.port else 5671 if ssl else 5672
     return (username, password, vhost, host, port, ssl)
 
 def set_ridiculously_high_buffers(sd):
